@@ -142,51 +142,132 @@ def generate_inventory_data():
     
     return sales_df, inventory_df, products_df
 
-# AI Demand Forecasting Function
+# Enhanced AI Demand Forecasting Function
 @st.cache_data
 def forecast_demand(sales_data, product_id, days_ahead=30):
     product_data = sales_data[sales_data['Product_ID'] == product_id].copy()
     product_data = product_data.sort_values('Date')
     
-    # Simple moving average with trend
-    window = 14
-    product_data['MA'] = product_data['Demand'].rolling(window=window).mean()
+    if len(product_data) < 30:  # Need minimum data for good forecast
+        return pd.DataFrame()
     
-    # Calculate trend
-    recent_data = product_data.tail(30)
-    if len(recent_data) > 1:
-        trend = np.polyfit(range(len(recent_data)), recent_data['Demand'], 1)[0]
+    # Enhanced seasonal analysis
+    product_data['DayOfWeek'] = product_data['Date'].dt.dayofweek
+    product_data['Month'] = product_data['Date'].dt.month
+    product_data['WeekOfYear'] = product_data['Date'].dt.isocalendar().week
+    
+    # Calculate multiple moving averages for trend detection
+    product_data['MA7'] = product_data['Demand'].rolling(window=7, min_periods=1).mean()
+    product_data['MA14'] = product_data['Demand'].rolling(window=14, min_periods=1).mean()
+    product_data['MA30'] = product_data['Demand'].rolling(window=30, min_periods=1).mean()
+    
+    # Trend analysis using multiple timeframes
+    recent_30_days = product_data.tail(30)
+    recent_14_days = product_data.tail(14)
+    recent_7_days = product_data.tail(7)
+    
+    # Calculate trends
+    if len(recent_30_days) > 1:
+        long_trend = np.polyfit(range(len(recent_30_days)), recent_30_days['Demand'], 1)[0]
     else:
-        trend = 0
+        long_trend = 0
+        
+    if len(recent_14_days) > 1:
+        medium_trend = np.polyfit(range(len(recent_14_days)), recent_14_days['Demand'], 1)[0]
+    else:
+        medium_trend = 0
+        
+    if len(recent_7_days) > 1:
+        short_trend = np.polyfit(range(len(recent_7_days)), recent_7_days['Demand'], 1)[0]
+    else:
+        short_trend = 0
+    
+    # Weighted trend (more weight to recent trends)
+    weighted_trend = (short_trend * 0.5) + (medium_trend * 0.3) + (long_trend * 0.2)
+    
+    # Seasonal patterns
+    daily_patterns = product_data.groupby('DayOfWeek')['Demand'].mean()
+    monthly_patterns = product_data.groupby('Month')['Demand'].mean()
+    overall_mean = product_data['Demand'].mean()
+    
+    # Weekly cyclical pattern
+    weekly_cycle = product_data.groupby('WeekOfYear')['Demand'].mean()
+    
+    # Base forecast using exponential smoothing
+    alpha = 0.3  # Smoothing factor
+    if len(product_data) > 0:
+        base_forecast = product_data['Demand'].ewm(alpha=alpha).mean().iloc[-1]
+    else:
+        base_forecast = product_data['Demand'].mean()
     
     # Generate forecasts
     last_date = product_data['Date'].max()
     forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=days_ahead, freq='D')
     
-    base_forecast = product_data['MA'].iloc[-1] if not pd.isna(product_data['MA'].iloc[-1]) else product_data['Demand'].mean()
-    
     forecasts = []
     for i, date in enumerate(forecast_dates):
-        # Apply trend
-        forecast = base_forecast + (trend * i)
+        # Base forecast with trend
+        forecast = base_forecast + (weighted_trend * i)
         
-        # Add seasonality (simplified)
-        seasonal_factor = 1.0
-        if date.month in [11, 12]:  # Holiday season
-            seasonal_factor = 1.3
-        elif date.month in [6, 7, 8]:  # Summer
-            seasonal_factor = 1.1
+        # Apply seasonal patterns
+        day_of_week = date.weekday()
+        month = date.month
+        week_of_year = date.isocalendar().week
         
-        forecast *= seasonal_factor
+        # Daily seasonality (Monday=0, Sunday=6)
+        if day_of_week in daily_patterns.index:
+            daily_factor = daily_patterns[day_of_week] / overall_mean
+        else:
+            daily_factor = 1.0
+            
+        # Monthly seasonality
+        if month in monthly_patterns.index:
+            monthly_factor = monthly_patterns[month] / overall_mean
+        else:
+            monthly_factor = 1.0
+            
+        # Holiday season boost (November-December)
+        holiday_factor = 1.0
+        if month in [11, 12]:
+            holiday_factor = 1.25  # 25% increase during holiday season
+        elif month in [6, 7, 8]:  # Summer boost
+            holiday_factor = 1.1   # 10% increase during summer
+            
+        # Back-to-school season (August-September)
+        if month in [8, 9]:
+            holiday_factor = 1.15  # 15% increase
+            
+        # Apply all factors
+        forecast = forecast * daily_factor * monthly_factor * holiday_factor
         
-        # Add some random variation for confidence intervals
-        std_dev = product_data['Demand'].std() * 0.3
+        # Add cyclical variation based on historical patterns
+        recent_volatility = product_data['Demand'].tail(14).std()
+        cycle_amplitude = recent_volatility * 0.1
+        cycle_factor = 1 + (cycle_amplitude * np.sin(2 * np.pi * i / 7)) / forecast  # Weekly cycle
         
+        forecast = forecast * cycle_factor
+        
+        # Ensure forecast is non-negative and reasonable
+        forecast = max(0, forecast)
+        
+        # More sophisticated confidence intervals
+        recent_std = product_data['Demand'].tail(30).std()
+        forecast_uncertainty = recent_std * (1 + i * 0.01)  # Uncertainty grows with time
+        
+        # Seasonal uncertainty adjustment
+        if month in [11, 12]:  # Holiday season has higher uncertainty
+            forecast_uncertainty *= 1.3
+        elif month in [1, 2]:  # Post-holiday has medium uncertainty
+            forecast_uncertainty *= 1.1
+            
         forecasts.append({
             'Date': date,
-            'Forecast': max(0, forecast),
-            'Lower_CI': max(0, forecast - 1.96 * std_dev),
-            'Upper_CI': forecast + 1.96 * std_dev
+            'Forecast': forecast,
+            'Lower_CI': max(0, forecast - 1.645 * forecast_uncertainty),  # 90% CI (tighter)
+            'Upper_CI': forecast + 1.645 * forecast_uncertainty,
+            'Trend_Component': weighted_trend * i,
+            'Seasonal_Factor': daily_factor * monthly_factor * holiday_factor,
+            'Confidence_Level': max(60, 95 - (i * 0.8))  # Decreasing confidence over time
         })
     
     return pd.DataFrame(forecasts)
@@ -399,6 +480,10 @@ def demand_forecasting(sales_df, inventory_df):
     # Generate forecast
     forecast_df = forecast_demand(sales_df, product_id, forecast_period)
     
+    if len(forecast_df) == 0:
+        st.warning("Insufficient historical data for reliable forecasting. Need at least 30 days of data.")
+        return
+    
     # Historical vs Forecast Chart
     historical_data = sales_df[sales_df['Product_ID'] == product_id].copy()
     historical_data = historical_data.sort_values('Date').tail(90)  # Last 90 days
@@ -411,25 +496,27 @@ def demand_forecasting(sales_df, inventory_df):
         y=historical_data['Demand'],
         mode='lines+markers',
         name='Historical Demand',
-        line=dict(color='blue')
+        line=dict(color='#2E86AB', width=2),
+        marker=dict(size=4)
     ))
     
-    # Forecast
+    # Forecast line
     fig.add_trace(go.Scatter(
         x=forecast_df['Date'],
         y=forecast_df['Forecast'],
         mode='lines+markers',
         name='AI Forecast',
-        line=dict(color='red', dash='dash')
+        line=dict(color='#F24236', width=3, dash='solid'),
+        marker=dict(size=5, symbol='diamond')
     ))
     
-    # Confidence intervals
+    # Confidence intervals with gradient
     fig.add_trace(go.Scatter(
         x=forecast_df['Date'],
         y=forecast_df['Upper_CI'],
         fill=None,
         mode='lines',
-        line_color='rgba(0,100,80,0)',
+        line_color='rgba(0,0,0,0)',
         showlegend=False
     ))
     
@@ -438,26 +525,66 @@ def demand_forecasting(sales_df, inventory_df):
         y=forecast_df['Lower_CI'],
         fill='tonexty',
         mode='lines',
-        line_color='rgba(0,100,80,0)',
-        name='95% Confidence Interval',
-        fillcolor='rgba(255,0,0,0.2)'
+        line_color='rgba(0,0,0,0)',
+        name='90% Confidence Interval',
+        fillcolor='rgba(242,66,54,0.15)'
     ))
     
+    # Add trend line
+    if 'Trend_Component' in forecast_df.columns:
+        trend_values = forecast_df['Forecast'].iloc[0] + forecast_df['Trend_Component']
+        fig.add_trace(go.Scatter(
+            x=forecast_df['Date'],
+            y=trend_values,
+            mode='lines',
+            name='Trend Component',
+            line=dict(color='#A8DADC', width=1, dash='dot'),
+            opacity=0.7
+        ))
+    
+    # Add annotations for key insights
+    max_forecast = forecast_df.loc[forecast_df['Forecast'].idxmax()]
+    fig.add_annotation(
+        x=max_forecast['Date'],
+        y=max_forecast['Forecast'],
+        text=f"Peak: {max_forecast['Forecast']:.0f}",
+        showarrow=True,
+        arrowhead=2,
+        arrowsize=1,
+        arrowwidth=2,
+        arrowcolor='#F24236',
+        font=dict(size=12, color='#F24236')
+    )
+    
     fig.update_layout(
-        title=f'Demand Forecast: {selected_product}',
+        title=f'AI Demand Forecast: {selected_product}',
         xaxis_title='Date',
         yaxis_title='Demand (Units)',
-        height=500
+        height=500,
+        hovermode='x unified',
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=0.01,
+            bgcolor='rgba(255,255,255,0.8)'
+        )
     )
     
     st.plotly_chart(fig, use_container_width=True)
     
-    # Forecast Summary
+    # Advanced Forecast Summary
     col1, col2, col3 = st.columns(3)
     
     with col1:
         avg_forecast = forecast_df['Forecast'].mean()
-        st.metric("Average Daily Forecast", f"{avg_forecast:.1f} units")
+        historical_avg = historical_data['Demand'].tail(30).mean()
+        change_pct = ((avg_forecast - historical_avg) / historical_avg * 100) if historical_avg > 0 else 0
+        st.metric(
+            "Average Daily Forecast", 
+            f"{avg_forecast:.1f} units",
+            delta=f"{change_pct:+.1f}% vs recent avg"
+        )
     
     with col2:
         total_forecast = forecast_df['Forecast'].sum()
@@ -466,7 +593,154 @@ def demand_forecasting(sales_df, inventory_df):
     with col3:
         current_stock = inventory_df[inventory_df['Product_ID'] == product_id]['Current_Stock'].iloc[0]
         coverage_days = current_stock / avg_forecast if avg_forecast > 0 else 0
-        st.metric("Current Stock Coverage", f"{coverage_days:.1f} days")
+        
+        coverage_status = "🔴 Critical" if coverage_days < 7 else "🟡 Low" if coverage_days < 14 else "🟢 Good"
+        st.metric(
+            "Current Stock Coverage", 
+            f"{coverage_days:.1f} days",
+            delta=coverage_status
+        )
+    
+    # Forecast Quality Indicators
+    st.subheader("📊 Forecast Quality & Confidence")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        avg_confidence = forecast_df['Confidence_Level'].mean() if 'Confidence_Level' in forecast_df.columns else 85
+        confidence_color = "🟢" if avg_confidence >= 80 else "🟡" if avg_confidence >= 70 else "🔴"
+        st.metric("Avg Confidence", f"{avg_confidence:.1f}%", delta=confidence_color)
+    
+    with col2:
+        trend_direction = "📈 Upward" if forecast_df['Forecast'].iloc[-1] > forecast_df['Forecast'].iloc[0] else "📉 Downward" if forecast_df['Forecast'].iloc[-1] < forecast_df['Forecast'].iloc[0] else "➡️ Stable"
+        st.metric("Trend Direction", trend_direction)
+    
+    with col3:
+        volatility = forecast_df['Forecast'].std() / forecast_df['Forecast'].mean() * 100
+        volatility_level = "Low" if volatility < 15 else "Medium" if volatility < 25 else "High"
+        st.metric("Forecast Volatility", f"{volatility:.1f}%", delta=volatility_level)
+    
+    with col4:
+        seasonal_impact = forecast_df['Seasonal_Factor'].max() - forecast_df['Seasonal_Factor'].min() if 'Seasonal_Factor' in forecast_df.columns else 0.2
+        seasonal_strength = "Strong" if seasonal_impact > 0.3 else "Moderate" if seasonal_impact > 0.1 else "Weak"
+        st.metric("Seasonal Impact", f"{seasonal_impact:.1%}", delta=seasonal_strength)
+    
+    # Seasonal Analysis
+    st.subheader("📈 Advanced Seasonal Analysis")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Monthly demand pattern with forecast overlay
+        monthly_data = sales_df[sales_df['Product_ID'] == product_id].copy()
+        monthly_data['Month'] = pd.to_datetime(monthly_data['Date']).dt.month
+        monthly_pattern = monthly_data.groupby('Month')['Demand'].mean().reset_index()
+        
+        # Add forecast monthly averages
+        forecast_df['Month'] = pd.to_datetime(forecast_df['Date']).dt.month
+        forecast_monthly = forecast_df.groupby('Month')['Forecast'].mean().reset_index()
+        
+        fig = go.Figure()
+        
+        fig.add_trace(go.Bar(
+            x=monthly_pattern['Month'],
+            y=monthly_pattern['Demand'],
+            name='Historical Average',
+            marker_color='#2E86AB',
+            opacity=0.7
+        ))
+        
+        if len(forecast_monthly) > 0:
+            fig.add_trace(go.Scatter(
+                x=forecast_monthly['Month'],
+                y=forecast_monthly['Forecast'],
+                mode='lines+markers',
+                name='Forecasted Average',
+                line=dict(color='#F24236', width=3),
+                marker=dict(size=8)
+            ))
+        
+        fig.update_layout(
+            title='Monthly Demand Pattern: Historical vs Forecast',
+            xaxis_title='Month',
+            yaxis_title='Average Demand',
+            height=400,
+            xaxis=dict(
+                tickmode='array',
+                tickvals=list(range(1, 13)),
+                ticktext=['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                         'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+            )
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        # Weekly pattern analysis
+        weekly_data = sales_df[sales_df['Product_ID'] == product_id].copy()
+        weekly_data['DayOfWeek'] = pd.to_datetime(weekly_data['Date']).dt.day_name()
+        weekly_pattern = weekly_data.groupby('DayOfWeek')['Demand'].mean().reset_index()
+        
+        # Reorder days
+        day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+        weekly_pattern['DayOfWeek'] = pd.Categorical(weekly_pattern['DayOfWeek'], categories=day_order, ordered=True)
+        weekly_pattern = weekly_pattern.sort_values('DayOfWeek')
+        
+        fig = px.bar(
+            weekly_pattern,
+            x='DayOfWeek',
+            y='Demand',
+            title='Weekly Demand Pattern',
+            color='Demand',
+            color_continuous_scale='Blues'
+        )
+        fig.update_layout(height=400)
+        fig.update_xaxes(title='Day of Week')
+        fig.update_yaxes(title='Average Demand')
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # Enhanced AI Insights
+    st.subheader("🤖 AI-Generated Insights & Recommendations")
+    
+    insights = []
+    
+    # Trend analysis
+    forecast_trend = forecast_df['Forecast'].iloc[-7:].mean() - forecast_df['Forecast'].iloc[:7].mean()
+    if forecast_trend > avg_forecast * 0.1:
+        insights.append("📈 **Strong upward trend detected** - Consider increasing safety stock by 15-20%")
+    elif forecast_trend < -avg_forecast * 0.1:
+        insights.append("📉 **Downward trend identified** - Opportunity to reduce inventory levels and carrying costs")
+    else:
+        insights.append("➡️ **Stable demand pattern** - Current inventory strategy appears optimal")
+    
+    # Seasonality insights
+    if 'Seasonal_Factor' in forecast_df.columns:
+        peak_season = forecast_df.loc[forecast_df['Seasonal_Factor'].idxmax()]
+        if peak_season['Seasonal_Factor'] > 1.2:
+            peak_date = peak_season['Date'].strftime('%B %d')
+            insights.append(f"🎯 **Peak demand expected around {peak_date}** - Increase stock 3-4 weeks before")
+    
+    # Stock coverage analysis
+    if coverage_days < 14:
+        reorder_urgency = "within 2-3 days" if coverage_days < 7 else "within 1 week"
+        insights.append(f"⚠️ **Immediate reorder required {reorder_urgency}** - Risk of stockout detected")
+    elif coverage_days > 45:
+        insights.append("💰 **Overstock opportunity** - Consider reducing next order quantity by 20-30%")
+    
+    # Volatility insights
+    recent_volatility = historical_data['Demand'].tail(14).std()
+    forecast_volatility = forecast_df['Forecast'].std()
+    
+    if forecast_volatility > recent_volatility * 1.2:
+        insights.append("🔄 **Increased volatility expected** - Consider flexible supplier agreements")
+    elif forecast_volatility < recent_volatility * 0.8:
+        insights.append("📊 **Demand stabilizing** - Opportunity to optimize reorder points")
+    
+    # Display insights
+    for insight in insights:
+        st.info(insight)
+    
+    # Forecast accuracy disclaimer
+    st.caption("💡 **Note**: Forecast accuracy decreases over time. Recommendations are based on historical patterns and current trends. Regular model updates improve prediction quality.")
 
 def smart_reordering(inventory_df, sales_df):
     st.header("🚛 Smart Reordering System")
