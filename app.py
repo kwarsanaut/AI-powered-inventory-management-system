@@ -364,9 +364,13 @@ def executive_dashboard(inventory_df, sales_df, metrics):
     if len(critical_items) > 0:
         st.error(f"⚠️ {len(critical_items)} items below reorder point!")
         
-        alert_df = critical_items[['Product_Name', 'Current_Stock', 'Reorder_Point', 'Lead_Time_Days']].copy()
-        alert_df['Days_Until_Stockout'] = alert_df['Current_Stock'] / inventory_df.set_index(critical_items.index)['Avg_Daily_Demand']
-        st.dataframe(alert_df, use_container_width=True)
+        alert_df = critical_items[['Product_Name', 'Current_Stock', 'Reorder_Point', 'Lead_Time_Days', 'Avg_Daily_Demand']].copy()
+        alert_df['Days_Until_Stockout'] = alert_df['Current_Stock'] / alert_df['Avg_Daily_Demand']
+        alert_df['Days_Until_Stockout'] = alert_df['Days_Until_Stockout'].round(1)
+        
+        # Display only relevant columns
+        display_cols = ['Product_Name', 'Current_Stock', 'Reorder_Point', 'Lead_Time_Days', 'Days_Until_Stockout']
+        st.dataframe(alert_df[display_cols], use_container_width=True)
     else:
         st.success("✅ All items are adequately stocked!")
 
