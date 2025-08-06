@@ -43,9 +43,6 @@ st.markdown("""
     .danger-metric {
         border-left: 4px solid #dc3545;
     }
-    .sidebar .sidebar-content {
-        background-color: #f8f9fa;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -466,57 +463,6 @@ def demand_forecasting(sales_df, inventory_df):
         current_stock = inventory_df[inventory_df['Product_ID'] == product_id]['Current_Stock'].iloc[0]
         coverage_days = current_stock / avg_forecast if avg_forecast > 0 else 0
         st.metric("Current Stock Coverage", f"{coverage_days:.1f} days")
-    
-    # Seasonal Analysis
-    st.subheader("📈 Seasonal Trend Analysis")
-    
-    # Monthly demand pattern
-    monthly_data = sales_df[sales_df['Product_ID'] == product_id].copy()
-    monthly_data['Month'] = monthly_data['Date'].dt.month
-    monthly_pattern = monthly_data.groupby('Month')['Demand'].mean().reset_index()
-    
-    fig = px.bar(
-        monthly_pattern,
-        x='Month',
-        y='Demand',
-        title='Average Monthly Demand Pattern',
-        color='Demand',
-        color_continuous_scale='Blues'
-    )
-    fig.update_xaxis(tickmode='array', tickvals=list(range(1, 13)), 
-                     ticktext=['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                              'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'])
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # AI Insights
-    st.subheader("🤖 AI-Generated Insights")
-    
-    insights = []
-    
-    # Trend analysis
-    recent_trend = forecast_df['Forecast'].tail(7).mean() - forecast_df['Forecast'].head(7).mean()
-    if recent_trend > 0:
-        insights.append("📈 Demand is trending upward in the forecast period")
-    elif recent_trend < -1:
-        insights.append("📉 Demand is expected to decline in the forecast period")
-    else:
-        insights.append("➡️ Demand is expected to remain stable")
-    
-    # Seasonality
-    if monthly_pattern['Demand'].max() / monthly_pattern['Demand'].min() > 1.3:
-        peak_month = monthly_pattern.loc[monthly_pattern['Demand'].idxmax(), 'Month']
-        month_names = {1: 'January', 2: 'February', 3: 'March', 4: 'April', 5: 'May', 6: 'June',
-                      7: 'July', 8: 'August', 9: 'September', 10: 'October', 11: 'November', 12: 'December'}
-        insights.append(f"🗓️ Strong seasonal pattern detected - peak demand in {month_names[peak_month]}")
-    
-    # Stock coverage
-    if coverage_days < 14:
-        insights.append("⚠️ Current stock may not cover forecast demand - immediate reorder recommended")
-    elif coverage_days > 60:
-        insights.append("💰 Opportunity to reduce inventory levels and carrying costs")
-    
-    for insight in insights:
-        st.info(insight)
 
 def smart_reordering(inventory_df, sales_df):
     st.header("🚛 Smart Reordering System")
@@ -582,84 +528,15 @@ def smart_reordering(inventory_df, sales_df):
             high_urgency = len(reorder_df[reorder_df['Urgency'] == 'HIGH'])
             st.metric("High Urgency Items", high_urgency)
         
-        # Reorder table with styling
-        def highlight_urgency(row):
-            if row['Urgency'] == 'HIGH':
-                return ['background-color: #ffebee'] * len(row)
-            else:
-                return ['background-color: #fff3e0'] * len(row)
-        
-        styled_df = reorder_df.style.apply(highlight_urgency, axis=1)
-        st.dataframe(styled_df, use_container_width=True)
+        # Reorder table
+        st.dataframe(reorder_df, use_container_width=True)
         
         # Generate purchase orders button
         if st.button("🛒 Generate Purchase Orders", type="primary"):
             st.success("✅ Purchase orders generated and sent to suppliers!")
             st.balloons()
-    
     else:
         st.success("✅ All items are adequately stocked. No immediate reorders needed!")
-    
-    # Supplier Performance Analysis
-    st.subheader("📊 Supplier Performance Dashboard")
-    
-    # Simulate supplier performance data
-    suppliers = inventory_df['Supplier'].unique()
-    supplier_performance = []
-    
-    for supplier in suppliers:
-        supplier_products = inventory_df[inventory_df['Supplier'] == supplier]
-        avg_lead_time = supplier_products['Lead_Time_Days'].mean()
-        on_time_delivery = np.random.uniform(85, 98)  # Simulated performance
-        quality_score = np.random.uniform(90, 99)
-        total_value = (supplier_products['Current_Stock'] * supplier_products['Unit_Cost']).sum()
-        
-        supplier_performance.append({
-            'Supplier': supplier,
-            'Products': len(supplier_products),
-            'Avg_Lead_Time': avg_lead_time,
-            'On_Time_Delivery': on_time_delivery,
-            'Quality_Score': quality_score,
-            'Total_Value': total_value,
-            'Performance_Score': (on_time_delivery + quality_score) / 2
-        })
-    
-    supplier_df = pd.DataFrame(supplier_performance)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Supplier performance heatmap
-        fig = px.scatter(
-            supplier_df,
-            x='On_Time_Delivery',
-            y='Quality_Score',
-            size='Total_Value',
-            color='Performance_Score',
-            hover_data=['Supplier', 'Products', 'Avg_Lead_Time'],
-            title='Supplier Performance Matrix',
-            color_continuous_scale='RdYlGn'
-        )
-        fig.update_layout(height=400)
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        # Lead time comparison
-        fig = px.bar(
-            supplier_df,
-            x='Supplier',
-            y='Avg_Lead_Time',
-            title='Average Lead Time by Supplier',
-            color='Avg_Lead_Time',
-            color_continuous_scale='RdYlBu_r'
-        )
-        fig.update_layout(height=400)
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Best performing supplier
-    best_supplier = supplier_df.loc[supplier_df['Performance_Score'].idxmax()]
-    st.info(f"🏆 Best Performing Supplier: **{best_supplier['Supplier']}** "
-            f"(Performance Score: {best_supplier['Performance_Score']:.1f})")
 
 def cost_optimization(inventory_df, sales_df, metrics):
     st.header("💰 Cost Optimization Analysis")
@@ -771,68 +648,16 @@ def cost_optimization(inventory_df, sales_df, metrics):
             'Action': 'Negotiate with suppliers or find alternatives'
         })
     
-    # ABC Analysis for focus areas
-    inventory_df['Annual_Sales_Value'] = inventory_df['Product_ID'].map(
-        sales_df.groupby('Product_ID')['Sales'].sum() * inventory_df.set_index('Product_ID')['Unit_Cost']
-    ).fillna(0)
-    
-    inventory_df_sorted = inventory_df.sort_values('Annual_Sales_Value', ascending=False)
-    inventory_df_sorted['Cumulative_Percentage'] = inventory_df_sorted['Annual_Sales_Value'].cumsum() / inventory_df_sorted['Annual_Sales_Value'].sum() * 100
-    
-    inventory_df_sorted['ABC_Category'] = 'C'
-    inventory_df_sorted.loc[inventory_df_sorted['Cumulative_Percentage'] <= 80, 'ABC_Category'] = 'A'
-    inventory_df_sorted.loc[(inventory_df_sorted['Cumulative_Percentage'] > 80) & (inventory_df_sorted['Cumulative_Percentage'] <= 95), 'ABC_Category'] = 'B'
-    
     if len(opportunities) > 0:
         opp_df = pd.DataFrame(opportunities)
+        # Calculate total before formatting
+        total_savings = sum([opp['Potential_Savings'] for opp in opportunities])
+        
+        # Format the display dataframe
         opp_df['Potential_Savings'] = opp_df['Potential_Savings'].apply(lambda x: f"${x:,.0f}")
         st.dataframe(opp_df, use_container_width=True)
         
-        total_savings = sum([float(x['Potential_Savings'].replace(', '').replace(',', '')) for x in opportunities])
         st.success(f"💡 Total Potential Annual Savings: **${total_savings:,.0f}**")
-    
-    # ABC Analysis Chart
-    st.subheader("📊 ABC Analysis - Focus Areas")
-    
-    abc_summary = inventory_df_sorted.groupby('ABC_Category').agg({
-        'Product_ID': 'count',
-        'Annual_Sales_Value': 'sum',
-        'Total_Inventory_Value': 'sum'
-    }).reset_index()
-    abc_summary.columns = ['Category', 'Product_Count', 'Sales_Value', 'Inventory_Value']
-    
-    fig = make_subplots(
-        rows=1, cols=2,
-        subplot_titles=('Products by ABC Category', 'Value Distribution'),
-        specs=[[{"type": "pie"}, {"type": "bar"}]]
-    )
-    
-    # Products pie chart
-    fig.add_trace(
-        go.Pie(labels=abc_summary['Category'], values=abc_summary['Product_Count'], name="Products"),
-        row=1, col=1
-    )
-    
-    # Value bar chart
-    fig.add_trace(
-        go.Bar(x=abc_summary['Category'], y=abc_summary['Sales_Value'], name="Sales Value", marker_color='lightblue'),
-        row=1, col=2
-    )
-    fig.add_trace(
-        go.Bar(x=abc_summary['Category'], y=abc_summary['Inventory_Value'], name="Inventory Value", marker_color='lightcoral'),
-        row=1, col=2
-    )
-    
-    fig.update_layout(height=400, showlegend=True)
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Recommendations
-    st.info("💡 **Focus Recommendations:**")
-    st.markdown("""
-    - **Category A (High Value)**: Implement tight inventory control, frequent reviews, and accurate forecasting
-    - **Category B (Medium Value)**: Regular monitoring with moderate control measures
-    - **Category C (Low Value)**: Simple reorder systems, bulk purchasing, and minimal oversight
-    """)
 
 def business_impact(metrics, inventory_df):
     st.header("📊 Business Impact & ROI Analysis")
@@ -1005,12 +830,12 @@ def business_impact(metrics, inventory_df):
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("📋 Schedule Demo", type="primary"):
-            st.success("Demo scheduled! Our team will contact you within 24 hours.")
+        if st.button("📋 Schedule Implementation", type="primary"):
+            st.success("Implementation timeline created! Our team will contact you within 24 hours.")
     
     with col2:
-        if st.button("📊 Request ROI Report"):
-            st.success("Detailed ROI report will be sent to your email.")
+        if st.button("📊 Generate Business Case"):
+            st.success("Detailed business case report generated and ready for download.")
     
     with col3:
         if st.button("🤝 Start Pilot Program"):
